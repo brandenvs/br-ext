@@ -1,0 +1,18 @@
+name: br-ext
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: deepseek
+    ports:
+      - "2345:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      NVIDIA_VISIBLE_DEVICES: all
+    runtime: nvidia
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
