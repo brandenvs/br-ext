@@ -32,182 +32,203 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+// cspell:ignore OLLAMA ollama Ollama deepseek DEEPSEEK
 const vscode = __importStar(require("vscode"));
-const node_fetch_native_1 = __importDefault(require("node-fetch-native")); // Ensures fetch works correctly
+const child_process = __importStar(require("child_process"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const OLLAMA_API_URL = "http://localhost:11434";
+const DEEPSEEK_MODELS = [
+    "deepseek-coder:1.5b",
+    "deepseek-coder:6.7b",
+    "deepseek-coder:33b",
+];
+const LLAMA_MODELS = [
+    "llama2",
+    "llama2:13b",
+    "llama2:70b",
+];
 function activate(context) {
-    console.log('Congratulations, your extension "br-ext" is now active!');
-    const disposable = vscode.commands.registerCommand("br-ext.helloWorld", () => {
-        const panel = vscode.window.createWebviewPanel("deepChat", "Deep Seek Chat", vscode.ViewColumn.One, {
-            enableScripts: true,
-        });
-        panel.webview.html = getWebviewContent();
-        panel.webview.onDidReceiveMessage(async (message) => {
-            if (message.command === "chat") {
-                const userPrompt = message.text;
-                let responseText = "";
+    console.log('Congratulations, your extension "vscode-ollama" is now active!');
+    let disposable = vscode.commands.registerCommand('vscode-ollama.run', async () => {
+        const model = vscode.workspace.getConfiguration('ollama').get('defaultModel');
+        if (!model) {
+            vscode.window.showErrorMessage('No default model set. Please set ollama.defaultModel in your settings.');
+            return;
+        }
+        const ollamaPath = vscode.workspace.getConfiguration('ollama').get('path') || 'ollama';
+        try {
+            child_process.execSync(`${ollamaPath} list`, { stdio: 'ignore' });
+        }
+        catch (error) {
+            vscode.window.showErrorMessage(`Ollama is not installed or not in your PATH. Please install Ollama and ensure it is in your PATH. Error: ${error.message}`);
+            return;
+        }
+        try {
+            child_process.execSync(`${ollamaPath} inspect ${model}`, { stdio: 'ignore' });
+        }
+        catch (error) {
+            const pull = await vscode.window.showInformationMessage(`Model ${model} not found. Do you want to pull it?`, 'Yes', 'No');
+            if (pull === 'Yes') {
                 try {
-                    const response = await (0, node_fetch_native_1.default)("http://localhost:2345/api/chat", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            model: "deepseek-r1:14b",
-                            messages: [{ role: "user", content: userPrompt }],
-                            stream: false, // Set to false for easier handling
-                        }),
+                    const progressOptions = {
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Pulling ${model}`,
+                        cancellable: true
+                    };
+                    await vscode.window.withProgress(progressOptions, async (progress, token) => {
+                        return new Promise((resolve, reject) => {
+                            const ollamaPull = child_process.spawn(ollamaPath, ['pull', model]);
+                            ollamaPull.stdout.on('data', (data) => {
+                                const output = data.toString();
+                                const lines = output.split('\n');
+                                lines.forEach(line => {
+                                    if (line.includes('%')) {
+                                        const percentage = parseInt(line.split('%')[0].trim());
+                                        progress.report({ increment: percentage });
+                                    }
+                                });
+                            });
+                            ollamaPull.stderr.on('data', (data) => {
+                                console.error(`stderr: ${data}`);
+                            });
+                            ollamaPull.on('close', (code) => {
+                                if (code === 0) {
+                                    vscode.window.showInformationMessage(`Model ${model} pulled successfully.`);
+                                    resolve();
+                                }
+                                else {
+                                    vscode.window.showErrorMessage(`Failed to pull ${model} with code ${code}`);
+                                    reject();
+                                }
+                            });
+                            token.onCancellationRequested(() => {
+                                ollamaPull.kill();
+                                vscode.window.showErrorMessage(`Pulling ${model} cancelled.`);
+                                reject();
+                            });
+                        });
                     });
-                    if (!response.ok)
-                        throw new Error(`HTTP error! Status: ${response.status}`);
-                    const data = await response.json();
-                    if (data && data.message) {
-                        responseText = data.message.content; // Adjust based on actual response format
-                    }
-                    else if (data.content) {
-                        responseText = data.content; // Some models return 'content' directly
-                    }
-                    panel.webview.postMessage({ command: "chatResponse", text: responseText });
                 }
-                catch (err) {
-                    console.error("Error:", err);
-                    panel.webview.postMessage({ command: "chatError", text: "An error occurred while processing your request." });
+                catch (error) {
+                    vscode.window.showErrorMessage(`Failed to pull ${model}`);
+                    return;
                 }
             }
+            else {
+                return;
+            }
+        }
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showInformationMessage('No text editor is active.');
+            return;
+        }
+        const selection = editor.selection;
+        const text = editor.document.getText(selection);
+        if (!text) {
+            vscode.window.showInformationMessage('No text selected.');
+            return;
+        }
+        const tempDir = path.join(context.extensionPath, 'tmp');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir);
+        }
+        const tempFilePath = path.join(tempDir, 'input.txt');
+        fs.writeFileSync(tempFilePath, text);
+        const ollamaArgs = [
+            'run',
+            model,
+            '-f',
+            tempFilePath
+        ];
+        const ollamaProcess = child_process.spawn(ollamaPath, ollamaArgs);
+        const outputChannel = vscode.window.createOutputChannel('Ollama');
+        outputChannel.show();
+        outputChannel.appendLine(`Running ollama ${model} on selected text:`);
+        outputChannel.appendLine(text);
+        outputChannel.appendLine('--------------------------------------------------');
+        ollamaProcess.stdout.on('data', (data) => {
+            outputChannel.append(data.toString());
+        });
+        ollamaProcess.stderr.on('data', (data) => {
+            outputChannel.append(data.toString());
+        });
+        ollamaProcess.on('close', (code) => {
+            if (code === 0) {
+                outputChannel.appendLine('--------------------------------------------------');
+                outputChannel.appendLine(`Ollama completed successfully.`);
+            }
+            else {
+                outputChannel.appendLine('--------------------------------------------------');
+                outputChannel.appendLine(`Ollama failed with code ${code}.`);
+            }
+            fs.unlinkSync(tempFilePath);
         });
     });
     context.subscriptions.push(disposable);
 }
-function getWebviewContent() {
-    return `
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>DeepSeek Chat</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        :root {
-            --dark-bg: #1e1e1e;
-            --darker-bg: #252526;
-            --border-color: #3c3c3c;
-            --text-color: #cccccc;
-            --highlight-color: #0e639c;
-            --input-bg: #3c3c3c;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-            line-height: 1.6;
-            color: var(--text-color);
-            background-color: var(--dark-bg);
-            padding: 20px;
-        }
-
-        .chat-container {
-            max-width: 800px;
-            margin: 0 auto;
-            background-color: var(--darker-bg);
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            padding: 20px;
-        }
-
-        h1 {
-            color: var(--highlight-color);
-            margin-bottom: 20px;
-            text-align: center;
-        }
-
-        .form-floating {
-            margin-bottom: 20px;
-        }
-
-        .form-control {
-            background-color: var(--input-bg);
-            color: var(--text-color);
-            border-color: var(--border-color);
-        }
-
-        .form-control:focus {
-            background-color: var(--input-bg);
-            color: var(--text-color);
-            box-shadow: 0 0 0 0.2rem rgba(14, 99, 156, 0.25);
-        }
-
-        .form-floating label {
-            color: #888;
-        }
-
-        #askBtn {
-            background-color: var(--highlight-color);
-            color: #ffffff;
-            border: none;
-            transition: background-color 0.3s;
-        }
-
-        #askBtn:hover {
-            background-color: #1177bb;
-        }
-
-        #response {
-            background-color: var(--input-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            padding: 15px;
-            margin-top: 20px;
-            white-space: pre-wrap;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-    </style>
-</head>
-
-<body>
-    <div class="chat-container">
-        <h1>DeepSeek Chat</h1>
-        <div class="form-floating mb-3">
-            <textarea class="form-control" placeholder="Ask something..." id="prompt" style="height: 100px"></textarea>
-            <label for="prompt">Chat with DeepSeek</label>
-        </div>
-        <div class="d-flex justify-content-end">
-            <button type="submit" id="askBtn" class="btn btn-primary">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
-                    class="bi bi-send me-2" viewBox="0 0 16 16">
-                    <path
-                        d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11ZM6.636 10.07l2.761 4.338L14.13 2.576zm6.787-8.201L1.591 6.602l4.339 2.76z" />
-                </svg>
-                Send
-            </button>
-        </div>
-        <div id="response"></div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        const vscode = acquireVsCodeApi();
-
-        document.getElementById('askBtn').addEventListener('click', () => {
-            const text = document.getElementById('prompt').value;
-            vscode.postMessage({ command: 'chat', text });
+async function handleChat(panel, userPrompt) {
+    try {
+        const response = await fetch(`${OLLAMA_API_URL}/api/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: "deepseek-coder:1.5b",
+                prompt: userPrompt,
+            }),
         });
-
-        window.addEventListener('message', event => {
-            const { command, text } = event.data;
-            if (command === 'chatResponse') {
-                document.getElementById('response').innerText = text;
-            }
-        });
-    </script>
-</body>
-
-</html>
-  `;
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        const data = await response.json();
+        const responseText = data.response || "No response received.";
+        panel.webview.postMessage({ command: "chatResponse", text: responseText });
+    }
+    catch (err) {
+        console.error("Error:", err);
+        panel.webview.postMessage({ command: "chatError", text: "An error occurred while processing your request." });
+    }
+}
+async function checkAndUpdateModels(panel) {
+    try {
+        const response = await fetch(`${OLLAMA_API_URL}/api/tags`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        const data = await response.json();
+        console.log("API response:", data); // Add this line for debugging
+        const installedModels = data.models.map((model) => model.name);
+        const modelStatus = [...DEEPSEEK_MODELS, ...LLAMA_MODELS].map(model => ({
+            name: model,
+            installed: installedModels.includes(model)
+        }));
+        panel.webview.postMessage({ command: "updateModelStatus", models: modelStatus });
+    }
+    catch (err) {
+        console.error("Error checking models:", err);
+        panel.webview.postMessage({ command: "modelCheckError", text: "Failed to check model status." });
+    }
 }
 function deactivate() { }
+async function pullModel(panel, model) {
+    try {
+        const response = await fetch(`${OLLAMA_API_URL}/api/pull`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: model }),
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        panel.webview.postMessage({ command: "modelPullSuccess", model });
+    }
+    catch (err) {
+        console.error("Error pulling model:", err);
+        panel.webview.postMessage({ command: "modelPullError", model, text: "Failed to pull model." });
+    }
+}
 //# sourceMappingURL=extension.js.map

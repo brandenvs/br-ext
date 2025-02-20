@@ -1,7 +1,7 @@
 {
   "name": "br-ext",
-  "displayName": "br-ext",
-  "description": "",
+  "displayName": "Mouse Chat",
+  "description": "Your very own mouse assistant🐭.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.85.0"
@@ -12,10 +12,20 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Ollama",
+      "properties": {
+        "ollama.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL of the Ollama API"
+        }
+      }
+    },
     "commands": [
       {
-        "command": "br-ext.helloWorld",
-        "title": "Hello World"
+        "command": "vscode-ollama.run",
+        "title": "Mouse Chat"
       }
     ]
   },
@@ -25,21 +35,22 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "vscode-test"
-  },
-  "devDependencies": {
-    "@types/mocha": "^10.0.6",
-    "@types/node": "18.x",
-    "@types/node-fetch": "^2.6.4",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.15.0",
-    "@typescript-eslint/parser": "^6.15.0",
-    "@vscode/test-cli": "^0.0.4",
-    "@vscode/test-electron": "^2.3.8",
-    "eslint": "^8.56.0",
-    "typescript": "^5.3.3"
+    "test": "vscode-test",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:ps": "docker-compose ps",
+    "docker:restart": "docker-compose restart",
+    "docker:start": "npm run docker:build && npm run docker:up",
+    "docker:stop": "npm run docker:down",
+    "docker:clean": "docker-compose down -v --rmi all --remove-orphans"
   },
   "dependencies": {
-    "node-fetch-native": "^1.6.6"
+    "vscode": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^9.4.6",
+    "typescript": "^2.8.3"
   }
 }
